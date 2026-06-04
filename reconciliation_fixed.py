@@ -22,6 +22,31 @@ import os
 import time
 from itertools import combinations
 
+# Check for optional dependencies up front so we can show clear messages
+try:
+    import openpyxl  # noqa: F401
+    _OPENPYXL_AVAILABLE = True
+except ImportError:
+    _OPENPYXL_AVAILABLE = False
+
+def _require_openpyxl(context: str = ""):
+    """Show a helpful install banner and return False if openpyxl is missing."""
+    if not _OPENPYXL_AVAILABLE:
+        msg = (
+            "**openpyxl is not installed.** "
+            "Excel files (.xlsx / .xls) require this package.\n\n"
+            "Install it by running one of:\n"
+            "```\npip install openpyxl\n```\n"
+            "or\n"
+            "```\nconda install openpyxl\n```\n"
+            "then restart the app."
+        )
+        if context:
+            msg = f"**{context}** — " + msg
+        st.error(msg)
+        return False
+    return True
+
 # ─────────────────────────────────────────────
 # CONFIG — column name mappings (edit if needed)
 # ─────────────────────────────────────────────
@@ -975,12 +1000,18 @@ def _sidebar_load():
             try:
                 buf = io.BytesIO(st.session_state["_raw_bytes"])
                 if uploaded.name.lower().endswith((".xlsx", ".xls")):
-                    prev = pd.read_excel(buf, header=None, nrows=20, dtype=str)
+                    if not _require_openpyxl("Cannot preview Excel file"):
+                        st.session_state["file_loaded"] = False
+                    else:
+                        prev = pd.read_excel(buf, header=None, nrows=20, dtype=str)
+                        st.session_state["_raw_preview"] = prev
                 else:
-                    buf.seek(0)
                     prev = pd.read_csv(buf, header=None, nrows=20, dtype=str,
                                        encoding="utf-8-sig")
-                st.session_state["_raw_preview"] = prev
+                    st.session_state["_raw_preview"] = prev
+            except ImportError:
+                _require_openpyxl("Cannot read Excel file")
+                st.session_state["file_loaded"] = False
             except Exception as e:
                 st.error(f"Could not read file: {e}")
                 st.session_state["file_loaded"] = False
@@ -1018,25 +1049,29 @@ def _sidebar_export():
                    horizontal=True)
 
     if fmt == "Excel (.xlsx)":
-        try:
-            data = _export_styled_excel(df_export)
-            st.download_button(
-                "⬇ Download Excel", data,
-                "reconciliation_export.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-        except ImportError:
-            st.warning("openpyxl not installed — exporting as CSV.")
-            st.download_button("⬇ Download CSV",
-                               df_export.to_csv(index=False).encode(),
-                               "reconciliation_export.csv", "text/csv",
-                               use_container_width=True)
-    else:
-        st.download_button("⬇ Download CSV",
-                           df_export.to_csv(index=False).encode(),
-                           "reconciliation_export.csv", "text/csv",
-                           use_container_width=True)
+        if not _OPENPYXL_AVAILABLE:
+            _require_openpyxl("Excel export unavailable")
+            st.info("👆 Install openpyxl, or switch to CSV export below.")
+            fmt = "CSV (.csv)"   # fall through to CSV
+        else:
+            try:
+                data = _export_styled_excel(df_export)
+                st.download_button(
+                    "⬇ Download Excel", data,
+                    "reconciliation_export.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+                return
+            except Exception as e:
+                st.error(f"Export failed: {e}")
+                return
+
+    # CSV path (also reached as fallback if openpyxl missing)
+    st.download_button("⬇ Download CSV",
+                       df_export.to_csv(index=False).encode(),
+                       "reconciliation_export.csv", "text/csv",
+                       use_container_width=True)
 
 
 def _sidebar_edit():
@@ -1156,10 +1191,14 @@ def _load_full_file_from_bytes(header_row: int):
     try:
         buf = io.BytesIO(raw_bytes)
         if filename.lower().endswith((".xlsx", ".xls")):
+            if not _require_openpyxl("Cannot load Excel file"):
+                return
             df = pd.read_excel(buf, header=header_row, dtype=str)
         else:
             df = pd.read_csv(buf, header=header_row, dtype=str, encoding="utf-8-sig")
         st.session_state["_full_raw_df"] = df
+    except ImportError:
+        _require_openpyxl("Cannot load Excel file")
     except Exception as e:
         st.error(f"Failed to load full file: {e}")
 
